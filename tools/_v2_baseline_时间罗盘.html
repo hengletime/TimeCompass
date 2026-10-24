@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="qxaeSSFAbg6OUbRWX8WTNC">
+<head data-page-node-id="Mta4oOCJVNsXqLhU1FHHut">
+<meta charset="UTF-8" data-page-node-id="Rh8YnXcxtHLt7sfNfFbWG0">
+<meta name="viewport" content="width=device-width,initial-scale=1" data-page-node-id="Zeok8kSfMNJqCHiLJjexIP">
+<title>时间罗盘</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:1;perspective:1100px}
+  svg{width:100vmin;height:100vmin;display:block}
+  .cell{fill:none;stroke:rgba(255,255,255,.20);stroke-width:.5}
+  /* 单格旋转 0.26s：数值越小重绘帧数越少。60Hz 下约 16 帧、144Hz 下约 37 帧，
+     视觉上仍能清楚看出"转了一格" */
+  .ring{transition:transform .26s cubic-bezier(.45,.05,.35,1)}
+  .ctext{fill:#e9edf5;text-anchor:middle;dominant-baseline:central;
+         font-family:"Noto Sans SC","Microsoft YaHei",sans-serif}
+  .btext{fill:#fff;text-anchor:middle;dominant-baseline:central;font-weight:700;
+         font-family:"Noto Sans SC","Microsoft YaHei",sans-serif}
+  #btns{position:fixed;left:14px;bottom:14px;display:flex;gap:8px;z-index:9}
+  #btns button{background:rgba(255,255,255,.05);color:#c7d1e6;border:1px solid rgba(255,255,255,.14);
+    border-radius:6px;padding:6px 13px;cursor:pointer;font-size:12px;letter-spacing:1px}
+  #btns button:hover{background:rgba(255,255,255,.12)}
+  #timePanel{position:fixed;right:14px;bottom:14px;display:none;gap:6px;align-items:center;z-index:9;
+    background:rgba(10,12,20,.92);border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:8px 10px}
+  #timePanel.open{display:flex}
+  #timePanel input{background:#11141d;color:#e9edf5;border:1px solid rgba(255,255,255,.2);
+    border-radius:5px;padding:4px 6px;font-size:12px;color-scheme:dark}
+  #timePanel button{background:rgba(255,255,255,.05);color:#c7d1e6;border:1px solid rgba(255,255,255,.14);
+    border-radius:6px;padding:5px 11px;cursor:pointer;font-size:12px}
+  #timePanel button:hover{background:rgba(255,255,255,.12)}
+  /* ---- 背景特效层 ---- */
+  #bgStars{position:fixed;inset:0;z-index:0;display:none}
+  #bgfx{position:fixed;inset:0;z-index:0;display:none;overflow:hidden}
+  body.b-nebula #bgfx{display:block;background:
+    radial-gradient(ellipse at 20% 30%,rgba(88,44,160,.45),transparent 55%),
+    radial-gradient(ellipse at 75% 25%,rgba(20,80,180,.4),transparent 50%),
+    radial-gradient(ellipse at 55% 75%,rgba(140,40,120,.35),transparent 55%),
+    radial-gradient(ellipse at 85% 70%,rgba(30,120,150,.3),transparent 50%);
+    animation:nebHue 40s steps(40) infinite alternate}
+  /* hue-rotate 是逐像素卷积，用 steps() 离散化 → 从 2400 次/40s 降到 40 次 */
+  @keyframes nebHue{from{filter:hue-rotate(0deg)}to{filter:hue-rotate(45deg)}}
+  body.b-aurora #bgfx{display:block;background:#020308}
+  body.b-aurora #bgfx::before,body.b-aurora #bgfx::after{content:'';position:absolute;left:-20%;width:140%;height:45%;filter:blur(42px);opacity:.55}
+  body.b-aurora #bgfx::before{top:-12%;background:linear-gradient(100deg,transparent,rgba(0,255,170,.5),rgba(0,180,255,.4),transparent);animation:aur1 12s steps(24) infinite alternate}
+  body.b-aurora #bgfx::after{top:16%;background:linear-gradient(80deg,transparent,rgba(120,0,255,.35),rgba(0,255,200,.4),transparent);animation:aur2 9s steps(20) infinite alternate}
+  @keyframes aur1{from{transform:translateX(-6%) rotate(-2deg)}to{transform:translateX(6%) rotate(2deg)}}
+  @keyframes aur2{from{transform:translateX(5%)}to{transform:translateX(-5%)}}
+  body.b-grid #bgfx{display:block;background:linear-gradient(#05010d 0%,#12043a 52%,#2a0a5e 62%,#05010d 62.2%)}
+  /* 网格流动：旧版动 background-position → 每帧全屏重绘。
+     改为 transform 平移（合成器加速，平滑且几乎零成本） */
+  body.b-grid #bgfx::before{content:'';position:absolute;left:-60%;right:-60%;top:62%;bottom:-120%;
+    background:repeating-linear-gradient(90deg,rgba(255,0,200,.45) 0 2px,transparent 2px 64px),
+               repeating-linear-gradient(0deg,rgba(0,229,255,.5) 0 2px,transparent 2px 52px);
+    transform-origin:top center;will-change:transform;
+    animation:gridMove 1.5s linear infinite}
+  @keyframes gridMove{
+    from{transform:perspective(320px) rotateX(62deg) translateY(0)}
+    to  {transform:perspective(320px) rotateX(62deg) translateY(52px)}}
+  /* ---- 防烧屏：色块柱亮度微呼吸（整组一次动画，不再 15 个元素各播一遍） ---- */
+  @keyframes beamPulse{0%,100%{opacity:1}50%{opacity:.88}}
+  .beamP{animation:beamPulse 7s steps(14) infinite}
+  /* ---- 屏保防烧屏 v4：漂移由主循环"每秒推进一步"驱动（见 driftStep） ----
+     为什么不再用 CSS 连续动画：连续 transform 动画会每秒催 60（甚至 144）帧，
+     而盘面 SVG 每秒都要重绘一次内容 → 每帧都要重新栅格化整张盘面，
+     实测占掉一半以上 CPU/GPU（风扇狂转的元凶）。
+     现在每秒只走一小步（水平约 4px、垂直约 1px），攒起来是清晰的缓慢漂移，
+     肉眼不会看到"跳"，但产生的帧数降到 1/60。
+     will-change 保留：把盘面提升为合成层，这样每秒挪一次只是 GPU 平移，不必重绘。 */
+  body.scr #wrap{will-change:transform}
+  body.scr #dial{will-change:transform}
+  @keyframes scrDim{0%{opacity:0}100%{opacity:.15}}
+  /* ---- 时辰信息卡 ---- */
+  #infoCard{position:fixed;top:14px;right:14px;z-index:9;width:250px;display:none;
+    background:rgba(8,12,24,.86);border:1px solid rgba(0,229,255,.4);border-radius:10px;
+    padding:10px 13px;box-shadow:0 0 20px rgba(0,180,255,.18);
+    color:#cfe6f5;font-size:12px;line-height:1.8;font-family:"Noto Sans SC","Microsoft YaHei",sans-serif}
+  /* 毛玻璃只在手动浏览时开：屏保下背景每帧都在动，backdrop-filter 会每帧重算卷积，是 GPU 头号开销 */
+  body:not(.scr) #infoCard{background:rgba(8,12,24,.74);backdrop-filter:blur(6px)}
+  #infoCard.open{display:block}
+  #infoCard h3{margin:0 0 6px;font-size:13px;color:#00e5ff;letter-spacing:3px;font-weight:600}
+  #infoCard .row{display:flex;justify-content:space-between;gap:10px}
+  #infoCard .k{color:#7fa8c9;flex-shrink:0}
+  #infoCard .v{text-align:right}
+  #infoCard .hl{color:#ffd86b}
+  /* ---- 性能监视器（按 P 键切换） ---- */
+  #perf{position:fixed;left:14px;top:14px;z-index:20;display:none;white-space:pre;
+    background:rgba(0,0,0,.72);border:1px solid rgba(0,229,255,.45);border-radius:8px;
+    padding:8px 11px;color:#7dffd0;font:11px/1.7 Consolas,"Cascadia Mono",monospace;pointer-events:none}
+  #perf.open{display:block}
+</style>
+</head>
+<body data-page-node-id="4fGjzBmz1kX3WpaIlzYeZN">
+<div id="wrap" data-page-node-id="SgyXvxEHXwOVscrsKxfqIE">
+  <svg id="dial" viewBox="-600 -600 1200 1200" data-page-node-id="gvh2WSMPHG4t8dfQsBb6a7"></svg>
+</div>
+<div id="btns" data-page-node-id="ruL04S0eHB9OY7cSeXAiW9">
+  <button id="bTick" data-page-node-id="SPNbALLRtXfaW54WUwfLoH">滴答 声</button>
+  <button id="bPause" data-page-node-id="wZBgglF3aVF78AFyCFBB3U">暂停</button>
+  <button id="bTime">设置 时间</button>
+  <button id="bBg">背景 · 深空</button>
+  <button id="bCard">详情 卡</button>
+  <button id="bFull" data-page-node-id="ipuJsf3MfkflFvoc2JSzG4">全屏</button>
+</div>
+<div id="timePanel">
+  <input id="timeInput" type="datetime-local" step="1">
+  <button id="bApply">应用</button>
+  <button id="bNow">回到现在</button>
+</div>
+<canvas id="bgStars"></canvas>
+<div id="bgfx"></div>
+<div id="infoCard">
+  <h3>子午流注 · 当令</h3>
+  <div class="row"><span class="k">时辰</span><span class="v hl" id="cShi">—</span></div>
+  <div class="row"><span class="k">经络当令</span><span class="v" id="cMer">—</span></div>
+  <div class="row"><span class="k">宜</span><span class="v" id="cYi" style="color:#7dffb2">—</span></div>
+  <div class="row"><span class="k">忌</span><span class="v" id="cJi" style="color:#ff8a8a">—</span></div>
+  <div class="row"><span class="k">节气</span><span class="v" id="cJq">—</span></div>
+  <div class="row"><span class="k">物候</span><span class="v" id="cPh" style="font-size:11px">—</span></div>
+  <div class="row"><span class="k">月相</span><span class="v" id="cMoon">—</span></div>
+  <div class="row"><span class="k">干支</span><span class="v" id="cGz">—</span></div>
+</div>
+<div id="perf"></div>
+<script>
+"use strict";
+/* ============================================================
+ * 运行模式与画质档位
+ *   #scr            屏保模式（由 .scr 壳以 file:///...#scr 打开）
+ *   #scr&q=eco      省电档：80 星 / 20fps
+ *   #scr&q=ultra    画质档：220 星 / 45fps
+ *   #perf           叠加性能监视器（也可在页面里按 P 键切换）
+ * ============================================================ */
+const HASH=location.hash||'';
+const SCR=HASH.indexOf('scr')>=0;
+const QM=HASH.match(/q=(eco|balanced|ultra)/);
+const QUALITY=(QM&&QM[1])||'balanced';
+/* 关键：所有动画速率由"时间间隔"显式限定，不再依赖 requestAnimationFrame 的 60Hz
+ * → 高刷屏（144Hz/240Hz）上也不会跟着加倍烧 CPU/GPU */
+const Q_PRESET={
+  eco:      {stars:80,  starMs:83},   /* 12 fps */
+  balanced: {stars:130, starMs:50},   /* 20 fps */
+  ultra:    {stars:200, starMs:33}    /* 30 fps */
+};
+const QCFG={...Q_PRESET[QUALITY]};
+
+/* ================= 常量 ================= */
+const SVG_NS='http://www.w3.org/2000/svg';
+const GAN=['甲','乙','丙','丁','戊','己','庚','辛','壬','癸'];
+const ZHI=['子','丑','寅','卯','辰','巳','午','未','申','酉','戌','亥'];
+const ZODIAC=['鼠','牛','虎','兔','龙','蛇','马','羊','猴','鸡','狗','猪'];
+const WEEK=['周日','周一','周二','周三','周四','周五','周六'];
+const LUNAR_M=['正','二','三','四','五','六','七','八','九','十','冬','腊'];
+const LUNAR_D=['初一','初二','初三','初四','初五','初六','初七','初八','初九','初十','十一','十二','十三','十四','十五','十六','十七','十八','十九','二十','廿一','廿二','廿三','廿四','廿五','廿六','廿七','廿八','廿九','三十'];
+/* 子午流注：时辰 → 经络 */
+const MERIDIAN=['足少阳胆经','足厥阴肝经','手太阴肺经','手阳明大肠经','足阳明胃经','足太阴脾经','手少阴心经','手太阳小肠经','足太阳膀胱经','足少阴肾经','手厥阴心包经','手少阳三焦经'];
+/* 节气（自立春起） */
+const JQ=['立春','雨水','惊蛰','春分','清明','谷雨','立夏','小满','芒种','夏至','小暑','大暑','立秋','处暑','白露','秋分','寒露','霜降','立冬','小雪','大雪','冬至','小寒','大寒'];
+const MOON_NAMES=['新月','蛾眉月','上弦月','盈凸月','满月','亏凸月','下弦月','残月'];
+const SYNODIC=29.5305882;
+const BLUE='#3d7df2';
+const SHI_CHEN_DESC=['夜半','鸡鸣','平旦','日出','食时','隅中','日中','日昳','哺时','日入','黄昏','人定'];
+/* 子午流注宜忌 */
+const YIJI=[['安睡护胆','熬夜'],['熟睡养肝','饮酒'],['深呼吸炼气','受寒'],['喝水通便','赖床'],['吃好早餐','空腹'],['动脑劳作','久坐'],['小憩养心','剧烈运动'],['午餐细嚼','冷饮'],['多水多动','憋尿'],['收敛安静','过劳'],['放松舒缓','动怒'],['静养入睡','宵夜']];
+/* 节气物候 */
+const JQ_PHEN={'立春':'东风解冻 · 蛰虫始振','雨水':'獭祭鱼 · 鸿雁来','惊蛰':'桃始华 · 仓庚鸣','春分':'玄鸟至 · 雷乃发声','清明':'桐始华 · 虹始见','谷雨':'萍始生 · 鸣鸠拂羽','立夏':'蝼蝈鸣 · 蚯蚓出','小满':'苦菜秀 · 麦秋至','芒种':'螳螂生 · 鵙始鸣','夏至':'鹿角解 · 蜩始鸣','小暑':'温风至 · 蟋蟀居宇','大暑':'腐草为萤 · 大雨时行','立秋':'凉风至 · 白露降','处暑':'鹰乃祭鸟 · 禾乃登','白露':'鸿雁来 · 群鸟养羞','秋分':'雷始收声 · 蛰虫坯户','寒露':'鸿雁来宾 · 菊有黄华','霜降':'豺乃祭兽 · 蛰虫咸俯','立冬':'水始冰 · 雉入大水为蜃','小雪':'虹藏不见 · 闭塞成冬','大雪':'鹖旦不鸣 · 虎始交','冬至':'蚯蚓结 · 麋角解','小寒':'雁北乡 · 鹊始巢','大寒':'鸡始乳 · 水泽腹坚'};
+
+/* ================= 农历 1900-2100 压缩表 ================= */
+const LUNAR_INFO=[0x04bd8,0x04ae0,0x0a570,0x054d5,0x0d260,0x0d950,0x16554,0x056a0,0x09ad0,0x055d2,0x04ae0,0x0a5b6,0x0a4d0,0x0d250,0x1d255,0x0b540,0x0d6a0,0x0ada2,0x095b0,0x14977,0x04970,0x0a4b0,0x0b4b5,0x06a50,0x06d40,0x1ab54,0x02b60,0x09570,0x052f2,0x04970,0x06566,0x0d4a0,0x0ea50,0x06e95,0x05ad0,0x02b60,0x186e3,0x092e0,0x1c8d7,0x0c950,0x0d4a0,0x1d8a6,0x0b550,0x056a0,0x1a5b4,0x025d0,0x092d0,0x0d2b2,0x0a950,0x0b557,0x06ca0,0x0b550,0x15355,0x04da0,0x0a5b0,0x14573,0x052b0,0x0a9a8,0x0e950,0x06aa0,0x0aea6,0x0ab50,0x04b60,0x0aae4,0x0a570,0x05260,0x0f263,0x0d950,0x05b57,0x056a0,0x096d0,0x04dd5,0x04ad0,0x0a4d0,0x0d4d4,0x0d250,0x0d558,0x0b540,0x0b6a0,0x195a6,0x095b0,0x049b0,0x0a974,0x0a4b0,0x0b27a,0x06a50,0x06d40,0x0af46,0x0ab60,0x09570,0x04af5,0x04970,0x064b0,0x074a3,0x0ea50,0x06b58,0x055c0,0x0ab60,0x096d5,0x092e0,0x0c960,0x0d954,0x0d4a0,0x0da50,0x07552,0x056a0,0x0abb7,0x025d0,0x092d0,0x0cab5,0x0a950,0x0b4a0,0x0baa4,0x0ad50,0x055d9,0x04ba0,0x0a5b0,0x15176,0x052b0,0x0a930,0x07954,0x06aa0,0x0ad50,0x05b52,0x04b60,0x0a6e6,0x0a4e0,0x0d260,0x0ea65,0x0d530,0x05aa0,0x076a3,0x096d0,0x04afb,0x04ad0,0x0a4d0,0x1d0b6,0x0d250,0x0d520,0x0dd45,0x0b5a0,0x056d0,0x055b2,0x049b0,0x0a577,0x0a4b0,0x0aa50,0x1b255,0x06d20,0x0ada0,0x14b63,0x09370,0x049f8,0x04970,0x064b0,0x168a6,0x0ea50,0x06b20,0x1a6c4,0x0aae0,0x0a2e0,0x0d2e3,0x0c960,0x0d557,0x0d4a0,0x0da50,0x05d55,0x056a0,0x0a6d0,0x055d4,0x052d0,0x0a9b8,0x0a950,0x0b4a0,0x0b6a6,0x0ad50,0x055a0,0x0aba4,0x0a5b0,0x052b0,0x0b273,0x06930,0x07337,0x06aa0,0x0ad50,0x14b55,0x04b60,0x0a570,0x054e4,0x0d160,0x0e968,0x0d520,0x0daa0,0x16aa6,0x056d0,0x04ae0,0x0a9d4,0x0a2d0,0x0d150,0x0f252,0x0d520];
+function lYearDays(y){let s=348;for(let i=0x8000;i>0x8;i>>=1)s+=(LUNAR_INFO[y-1900]&i)?1:0;return s+lLeapDays(y)}
+function lLeapMonth(y){return LUNAR_INFO[y-1900]&0xf}
+function lLeapDays(y){const m=lLeapMonth(y);return m?((LUNAR_INFO[y-1900]&0x10000)?30:29):0}
+function lMonthDays(y,m){return (LUNAR_INFO[y-1900]&(0x10000>>m))?30:29}
+function toLunar(dt){
+  let offset=Math.floor((Date.UTC(dt.getFullYear(),dt.getMonth(),dt.getDate())-Date.UTC(1900,0,31))/86400000);
+  let year=1900,temp;
+  for(let i=1900;i<2101&&offset>0;i++){temp=lYearDays(i);if(offset<temp){year=i;break}offset-=temp}
+  const leap=lLeapMonth(year);let isLeap=false,month=1;
+  for(month=1;month<13&&offset>0;month++){
+    if(leap>0&&month===leap+1&&!isLeap){--month;isLeap=true;temp=lLeapDays(year)}
+    else temp=lMonthDays(year,month);
+    if(isLeap&&month===leap+1)isLeap=false;
+    if(offset<temp)break;
+    offset-=temp;
+  }
+  return {year,month,day:offset+1,isLeap};
+}
+/* 节气近似锚点（误差±1天）：自立春起的 (月,日) */
+const JQ_MD=[[2,4],[2,19],[3,5],[3,20],[4,4],[4,20],[5,5],[5,21],[6,5],[6,21],[7,7],[7,22],[8,7],[8,23],[9,7],[9,23],[10,8],[10,23],[11,7],[11,22],[12,7],[12,21],[1,5],[1,20]];
+function jqAnchor(y,idx){
+  const [m,d]=JQ_MD[idx];
+  return Date.UTC(m>=2?y:y+1,m-1,d);   // 小寒/大寒属次年年初
+}
+function jqState(now){
+  const t=now.getTime(), y=now.getFullYear();
+  const list=[];
+  for(let i=0;i<24;i++){list.push([jqAnchor(y-1,i),i]);list.push([jqAnchor(y,i),i])}
+  list.sort((a,b)=>a[0]-b[0]);
+  let cur=list[0],nx=list[1];
+  for(let k=0;k<list.length-1;k++){
+    if(t>=list[k][0]&&t<list[k+1][0]){cur=list[k];nx=list[k+1];break}
+  }
+  return {idx:cur[1],next:JQ[nx[1]],nextIn:Math.ceil((nx[0]-t)/86400000)};
+}
+/* 干支 */
+function ganzhiYear(y){const idx=((y-4)%60+60)%60;return{idx,gan:idx%10,zhi:idx%12}}
+function ganzhiDay(dt){
+  const days=Math.round(Date.UTC(dt.getFullYear(),dt.getMonth(),dt.getDate())/86400000)-Math.round(Date.UTC(2000,0,1)/86400000);
+  const idx=((15+days)%60+60)%60;   // 2000-01-01 = 己卯 = 15
+  return{idx,gan:idx%10,zhi:idx%12};
+}
+/* 月相：基准新月 2000-01-06 18:14 UTC */
+function getMoon(dt){
+  let ph=((dt.getTime()-Date.UTC(2000,0,6,18,14))/86400000)%SYNODIC; if(ph<0)ph+=SYNODIC;
+  return {phase:ph,f:ph/SYNODIC};
+}
+/* ================= SVG 工具 =================
+ * 角度约定：aDeg 从正上方 12 点起算，顺时针增大；180 = 正下方 6 点（色块柱位置） */
+function pol(r,aDeg){const rad=(aDeg-90)*Math.PI/180;return [r*Math.cos(rad),r*Math.sin(rad)]}
+function sector(r1,r2,a1,a2){
+  const p1=pol(r2,a1),p2=pol(r2,a2),p3=pol(r1,a2),p4=pol(r1,a1);
+  return `M${p1[0]},${p1[1]} A${r2},${r2} 0 0 1 ${p2[0]},${p2[1]} L${p3[0]},${p3[1]} A${r1},${r1} 0 0 0 ${p4[0]},${p4[1]} Z`;
+}
+function el(tag,attrs,parent){const e=document.createElementNS(SVG_NS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e}
+/* 月相亮面路径：f∈[0,1) 0=朔 0.5=望（北半球，盈月光在右） */
+function moonLitPath(r,f){
+  if(f<=0.018||f>=0.982)return '';
+  const k=Math.cos(2*Math.PI*f), rx=(Math.abs(k)*r).toFixed(3);
+  if(f<0.5){  // 盈：右半亮
+    const sweep=k>0?0:1;   // 蛾眉:端点弧向右凹 / 凸月:向左凸
+    return `M0,${-r} A${r},${r} 0 0 1 0,${r} A${rx},${r} 0 0 ${sweep} 0,${-r} Z`;
+  }else{      // 亏：左半亮
+    const sweep=k<0?0:1;
+    return `M0,${-r} A${r},${r} 0 0 0 0,${r} A${rx},${r} 0 0 ${sweep} 0,${-r} Z`;
+  }
+}
+
+/* ====== 派生量快照：农历/节气/月相/干支每分钟只算一次 ======
+ * 旧版在 60fps 主循环里每帧重算（jqState 要建 48 元素数组再排序、toLunar 要循环上百年）
+ * → 每秒 60 次纯属浪费。现在按"分钟"做缓存键。 */
+let S=null,Skey='';
+function ensureSnap(dt){
+  const k=dt.getFullYear()+'-'+dt.getMonth()+'-'+dt.getDate()+'-'+dt.getHours()+'-'+dt.getMinutes();
+  if(k!==Skey){
+    Skey=k;
+    S={l:toLunar(dt),jq:jqState(dt),moon:getMoon(dt),
+       gy:ganzhiYear(dt.getFullYear()),gd:ganzhiDay(dt)};
+  }
+  return S;
+}
+
+/* ================= 15 层环定义（内 → 外） =================
+ * 每环 n 格，格 i 中心角 = 180° - i*step；
+ * 显示时整环 rotate(+idx*step)，把当前格瞬移到正下方色块柱处 —— 环是跳格的，柱永远不动 */
+const RING_DEFS=[
+ {key:'week',   n:7,  r1:72, r2:102, fs:13, fmt:i=>WEEK[i],                 idx:dt=>dt.getDay()},
+ {key:'zodiac', n:12, r1:102,r2:130, fs:13, fmt:i=>ZODIAC[i]+'年',          idx:dt=>S.gy.zhi},
+ {key:'smon',   n:12, r1:130,r2:158, fs:13, fmt:i=>(i+1)+'月',              idx:dt=>dt.getMonth()},
+ {key:'lmon',   n:12, r1:158,r2:186, fs:13, fmt:i=>LUNAR_M[i]+'月',         idx:dt=>(S.l.month-1)%12},
+ {key:'jq',     n:24, r1:186,r2:214, fs:12, fmt:i=>JQ[i],                   idx:dt=>S.jq.idx},
+ {key:'sday',   n:31, r1:214,r2:242, fs:11, fmt:i=>(i+1)+'日',              idx:dt=>dt.getDate()-1},
+ {key:'lday',   n:30, r1:242,r2:270, fs:12, fmt:i=>LUNAR_D[i],              idx:dt=>S.l.day-1},
+ {key:'mname',  n:8,  r1:270,r2:294, fs:12, fmt:i=>MOON_NAMES[i],           idx:dt=>Math.floor(S.moon.f*8)%8},
+ {key:'mph',    n:30, r1:294,r2:328, moon:true,                             idx:dt=>Math.round(S.moon.f*30)%30},
+ {key:'shichen',n:12, r1:328,r2:356, fs:13, fmt:i=>ZHI[i]+'时',             idx:dt=>Math.floor((dt.getHours()+1)/2)%12},
+ {key:'merid',  n:12, r1:356,r2:384, fs:11, fmt:i=>MERIDIAN[i],             idx:dt=>Math.floor((dt.getHours()+1)/2)%12},
+ {key:'hour',   n:24, r1:384,r2:412, fs:12, fmt:i=>i+'时',                  idx:dt=>dt.getHours()},
+ {key:'ygz',    n:60, r1:412,r2:440, fs:11, fmt:i=>GAN[i%10]+ZHI[i%12],     idx:dt=>S.gy.idx},
+ {key:'min',    n:60, r1:440,r2:468, fs:11, fmt:i=>i+'分',                  idx:dt=>dt.getMinutes()},
+ {key:'sec',    n:60, r1:468,r2:496, fs:11, fmt:i=>i+'秒',                  idx:dt=>dt.getSeconds()},
+];
+const svg=document.getElementById('dial');
+const beamG=el('g',{class:'beamP'},svg);   // 固定色块柱层（垫底：蓝色垫底，环文字从上面滑过）
+const ringsG=el('g',{},svg);               // 旋转环层（格子和文字随环一起转动）
+const centerG=el('g',{},svg);
+
+/* ================= 构建各环 ================= */
+const ringObjs={};
+for(const d of RING_DEFS){
+  const g=el('g',{class:'ring'},ringsG);
+  const step=360/d.n;
+  for(let i=0;i<d.n;i++){
+    const aMid=180-i*step;
+    el('path',{d:sector(d.r1,d.r2,aMid-step/2,aMid+step/2),class:'cell'},g);
+    if(!d.moon&&d.fmt){
+      const [x,y]=pol((d.r1+d.r2)/2,aMid);
+      const t=el('text',{x,y,'font-size':d.fs,class:'ctext',
+        transform:`rotate(${aMid-180} ${x} ${y})`},g);   // 切向排布：字顶朝圆心
+      t.textContent=d.fmt(i);
+    }
+  }
+  ringObjs[d.key]={g,def:d,lastIdx:-1};
+}
+/* 月相图形环：30 个小月亮 */
+(function(){
+  const d=RING_DEFS.find(x=>x.key==='mph'), g=ringObjs.mph.g, step=360/d.n;
+  for(let i=0;i<30;i++){
+    const aMid=180-i*step, [x,y]=pol((d.r1+d.r2)/2,aMid), r=12;
+    const mg=el('g',{transform:`translate(${x},${y})`},g);
+    el('circle',{r,fill:'#12151d',stroke:'rgba(255,255,255,.25)','stroke-width':.5},mg);
+    const lp=moonLitPath(r,i/30);
+    if(lp)el('path',{d:lp,fill:'#d8deea'},mg);
+  }
+})();
+/* 外边界细圈 */
+el('circle',{r:496,fill:'none',stroke:'rgba(255,255,255,.30)','stroke-width':1},ringsG);
+/* ================= 固定色块柱（正下方 180°，永远不动） =================
+ * 只画蓝色底块；格内文字属于旋转环，随环一起滑入色块落定 */
+for(const d of RING_DEFS){
+  const step=360/d.n;
+  el('path',{d:sector(d.r1,d.r2,180-step/2,180+step/2),
+    fill:BLUE,stroke:'rgba(255,255,255,.55)','stroke-width':.6},beamG);
+}
+
+/* ================= 中心年份 ================= */
+el('circle',{r:72,fill:'#000',stroke:'rgba(255,255,255,.55)','stroke-width':1.2},centerG);
+const centerYear=el('text',{x:0,y:-8,'font-size':40,class:'btext','font-weight':700},centerG);
+centerYear.textContent='—';
+const centerSub=el('text',{x:0,y:24,'font-size':13,class:'ctext',fill:'#8fa2c4'},centerG);
+centerSub.textContent='';
+
+let paused=false, pausedAt=null;
+let lastYear=null, lastCard='';
+
+/* ================= 时辰信息卡 ================= */
+const $=id=>document.getElementById(id);
+function renderCard(dt){
+  ensureSnap(dt);
+  const l=S.l, sc=Math.floor((dt.getHours()+1)/2)%12;
+  const jq=S.jq, moon=S.moon, gy=S.gy, gd=S.gd;
+  const gh=GAN[((gd.gan%5)*2+sc)%10]+ZHI[sc];
+  const ill=Math.round((1-Math.cos(moon.f*2*Math.PI))/2*100);
+  $('cShi').textContent=ZHI[sc]+'时 · '+SHI_CHEN_DESC[sc];
+  $('cMer').textContent=MERIDIAN[sc];
+  $('cYi').textContent=YIJI[sc][0];
+  $('cJi').textContent=YIJI[sc][1];
+  $('cJq').textContent=JQ[jq.idx]+' · 下一节气 '+jq.next+' '+jq.nextIn+'天后';
+  $('cPh').textContent=JQ_PHEN[JQ[jq.idx]]||'—';
+  $('cMoon').textContent=MOON_NAMES[Math.floor(moon.f*8)%8]+' · 亮度 '+ill+'%';
+  $('cGz').textContent=GAN[gy.gan]+ZHI[gy.zhi]+'年 '+GAN[gd.gan]+ZHI[gd.zhi]+'日 '+gh+'时 · 农历'+(l.isLeap?'闰':'')+LUNAR_M[l.month-1]+'月'+LUNAR_D[l.day-1];
+}
+
+function update(dt){
+  ensureSnap(dt);
+  for(const d of RING_DEFS){
+    const r=ringObjs[d.key];
+    const idx=((d.idx(dt)%d.n)+d.n)%d.n;
+    if(idx!==r.lastIdx){
+      const step=360/d.n;
+      const first=r.lastIdx===-1;
+      /* 累计角度：永远只向前转 delta 格，59→0 也只转 1 格不倒转 */
+      const delta=first?idx:((idx-r.lastIdx)%d.n+d.n)%d.n;
+      r.rot=(r.rot||0)+delta*step;
+      if(first){
+        r.g.style.transition='none';          // 首次渲染直接就位，不播动画
+        r.g.style.transform=`rotate(${r.rot}deg)`;
+        r.g.getBoundingClientRect();          // 强制回流后再恢复过渡
+        setTimeout(()=>{r.g.style.transition=''},0);
+      }else{
+        r.g.style.transform=`rotate(${r.rot}deg)`;   // 播放 0.32s 单格旋转
+      }
+      r.lastIdx=idx;
+    }
+  }
+  if(dt.getFullYear()!==lastYear){
+    lastYear=dt.getFullYear();
+    const gy=ganzhiYear(lastYear);
+    centerYear.textContent=lastYear;
+    centerSub.textContent=GAN[gy.gan]+ZHI[gy.zhi]+'年 · '+ZODIAC[gy.zhi];
+  }
+  /* 信息卡：时辰或日期变化时刷新（出错也不得拖死主循环） */
+  const ck=dt.toDateString()+':'+Math.floor((dt.getHours()+1)/2)%12;
+  if(ck!==lastCard){
+    lastCard=ck;
+    try{renderCard(dt)}catch(e){console.warn('card:',e)}
+  }
+}
+
+/* ================= 自定义时间偏移 + 主循环 =================
+ * 旧版用 requestAnimationFrame → 每秒被催 60 次（高刷屏 144 次），
+ * 而盘面最快也只每秒变一格，纯属空转。
+ * 现在：显式对齐到"下一个整秒"，每秒只跑一次；滴答声也在同一个节拍上，
+ * 不再需要 50ms 轮询定时器。 */
+let timeOffset=0;                       // 自定义时间 = 当前系统时间 + 偏移
+function currentDT(){ return paused?pausedAt:new Date(Date.now()+timeOffset); }
+
+/* ============ 防烧屏漂移（李萨如轨迹，每秒一步） ============
+ * 水平 ±5vw / 47 秒一个来回；垂直 ±4vh / 73 秒一个来回（47 与 73 互质 → 轨迹不重复，
+ * 长期运行能覆盖到盘面的所有像素位置，这才是防烧屏真正需要的性质）。
+ * 每秒推进的位移只有几个像素 → 看起来是连贯的缓慢漂移；
+ * 但产生的帧数从"每秒 60 帧"降到"每秒 1 帧"。 */
+const wrapEl=document.getElementById('wrap');
+const dialEl=document.getElementById('dial');
+let driftT=0;
+function driftStep(){
+  driftT++;
+  const x=5*Math.sin(driftT*2*Math.PI/47);
+  const y=4*Math.sin(driftT*2*Math.PI/73+0.9);
+  wrapEl.style.transform='translateX('+x.toFixed(3)+'vw)';
+  dialEl.style.transform='translateY('+y.toFixed(3)+'vh)';
+}
+
+let loopTimer=null, lastSec=-1;
+function loop(){
+  const dt=currentDT();
+  try{ update(dt); }catch(e){ console.warn('update:',e) }
+  if(SCR) driftStep();
+  /* 滴答声：与主循环共用节拍（每秒一次），省掉旧版 20Hz 的轮询 */
+  if(tickOn && dt.getSeconds()!==lastSec){ lastSec=dt.getSeconds(); beep(lastSec===0); }
+  loopTimer=setTimeout(loop, 1000-(Date.now()%1000)+12);
+}
+
+/* ================= 控制按钮 ================= */
+let audioCtx=null, tickOn=false;
+function beep(strong){
+  if(!tickOn)return;
+  try{
+    if(!audioCtx)audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+    o.frequency.value=strong?1320:990;
+    g.gain.setValueAtTime(strong?0.38:0.24,audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+0.09);
+    o.connect(g).connect(audioCtx.destination);
+    o.start();o.stop(audioCtx.currentTime+0.06);
+  }catch(e){ tickOn=false; }   // 音频不可用时静默关闭，避免定时器持续抛错
+}
+document.getElementById('bTick').onclick=e=>{
+  tickOn=!tickOn;
+  e.target.textContent=tickOn?'滴答 声开':'滴答 声';
+  if(tickOn)lastSec=-1;                     // 立即跟上节拍，不用等下一秒
+};
+document.getElementById('bPause').onclick=e=>{
+  paused=!paused;
+  if(paused)pausedAt=new Date();
+  e.target.textContent=paused?'继续':'暂停';
+  update(currentDT());
+};
+document.getElementById('bFull').onclick=()=>{
+  if(document.fullscreenElement)document.exitFullscreen();
+  else document.documentElement.requestFullscreen();
+};
+
+/* ================= 鼠标滚轮缩放整个盘面 ================= */
+let zoom=1;
+const clampZ=v=>Math.min(6,Math.max(0.35,v));
+window.addEventListener('wheel',e=>{
+  e.preventDefault();
+  zoom=clampZ(zoom*(e.deltaY<0?1.12:1/1.12));
+  applyTf();
+},{passive:false});
+svg.addEventListener('dblclick',()=>{zoom=1;lastRx=0;lastRy=0;applyTf();});
+
+/* ================= 自定义时间面板 ================= */
+const timePanel=document.getElementById('timePanel');
+const timeInput=document.getElementById('timeInput');
+const pad2=n=>String(n).padStart(2,'0');
+function toLocalInput(v){
+  return v.getFullYear()+'-'+pad2(v.getMonth()+1)+'-'+pad2(v.getDate())
+        +'T'+pad2(v.getHours())+':'+pad2(v.getMinutes())+':'+pad2(v.getSeconds());
+}
+document.getElementById('bTime').onclick=()=>{
+  timeInput.value=toLocalInput(currentDT());
+  timePanel.classList.toggle('open');
+};
+document.getElementById('bApply').onclick=()=>{
+  const v=new Date(timeInput.value);
+  if(!isNaN(v.getTime())){
+    timeOffset=v.getTime()-Date.now();
+    paused=false;
+    document.getElementById('bPause').textContent='暂停';
+    update(currentDT());
+  }
+  timePanel.classList.remove('open');
+};
+document.getElementById('bNow').onclick=()=>{
+  timeOffset=0;
+  paused=false;
+  lastSec=-1;
+  document.getElementById('bPause').textContent='暂停';
+  update(currentDT());
+  timePanel.classList.remove('open');
+};
+
+/* ================= 背景切换：深空/星空/星云/极光/网格 ================= */
+const BGS=['深空','星空','星云','极光','网格'];
+let bgIdx=0, starTimer=null, starGen=0, starResize=null;
+const bgCv=document.getElementById('bgStars');
+/* resize 监听只注册一次（旧版每次切背景都 addEventListener，会不断累积） */
+window.addEventListener('resize',()=>{ if(starResize) starResize(); });
+
+/* 星空：定时驱动（不再用 rAF），速率与显示器刷新率解耦；
+ * 用 globalAlpha 代替每颗星拼一次 rgba 字符串（旧版每秒上万次字符串分配）。 */
+function startStars(){
+  const ctx=bgCv.getContext('2d');
+  const TAU=Math.PI*2;
+  const gen=++starGen;
+  let W,H,stars=[],meteors=[],drawn=0,lastTick=0,gapSum=0;
+  function mkStar(){
+    return {x:Math.random()*W, y:Math.random()*H,
+      r:.35+Math.random()*1.15,
+      s:.22+Math.random()*.78,      /* 呼吸速度各不相同 → 周期约 6.5~28 秒 */
+      p:Math.random()*TAU,          /* 相位错开，避免整屏同步闪 */
+      c:NaN};                       /* 上一帧 cos 值，用于捕捉"最暗时刻"；NaN=首帧不判定 */
+  }
+  /* 换位置：呼吸到最暗的一瞬才跳——此刻该星透明度为 0，跳变肉眼不可见 */
+  function respawn(st){
+    st.x=Math.random()*W;
+    st.y=Math.random()*H;
+    st.r=.35+Math.random()*1.15;
+  }
+  function rs(){
+    W=bgCv.width=innerWidth; H=bgCv.height=innerHeight;
+    stars=new Array(QCFG.stars);
+    for(let i=0;i<QCFG.stars;i++) stars[i]=mkStar();
+  }
+  rs();
+  starResize=rs;
+  function frame(){
+    if(gen!==starGen) return;
+    starTimer=setTimeout(frame, QCFG.starMs);
+    const now=Date.now();
+    gapSum+=now-(lastTick||now); lastTick=now;
+    ctx.clearRect(0,0,W,H);
+    const t=Date.now()/1000;
+    ctx.fillStyle='#c8dcff';
+    for(let i=0;i<stars.length;i++){
+      const st=stars[i];
+      const ph=t*st.s+st.p, cos=Math.cos(ph);
+      /* cos 由负转正 ⇔ 恰好经过 sin 的极小值（最暗点）→ 在此刻迁到新位置 */
+      if(st.c===st.c && st.c<0 && cos>=0) respawn(st);
+      st.c=cos;
+      const bright=.5+.5*Math.sin(ph);      /* 0=最暗 1=最亮 */
+      if(bright<.02) continue;              /* 最暗那一瞬不绘制，让"换位"彻底隐形 */
+      ctx.globalAlpha=.14+.68*Math.pow(bright,1.15);
+      ctx.beginPath();ctx.arc(st.x,st.y,st.r*(.7+.55*bright),0,TAU);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+    drawn++;
+    if(Math.random()<0.012&&meteors.length<3){
+      meteors.push({x:Math.random()*W,y:Math.random()*H*.5,
+        vx:-(4+Math.random()*4),vy:2+Math.random()*2,life:1});}
+    ctx.strokeStyle='rgba(120,220,255,'+1+')';   // 逐颗设透明度，避免每帧拼串
+    ctx.lineWidth=1.4;
+    for(let i=meteors.length-1;i>=0;i--){
+      const m=meteors[i];
+      m.x+=m.vx;m.y+=m.vy;m.life-=.02;
+      if(m.life<=0){ meteors.splice(i,1); continue; }   // 就地删除，不再每帧 filter 出新数组
+      ctx.globalAlpha=Math.max(m.life,0);
+      ctx.beginPath();ctx.moveTo(m.x,m.y);ctx.lineTo(m.x-m.vx*9,m.y-m.vy*9);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    /* 自适应降级：连续 300 帧以上、且实测平均帧间隔超过目标 2.2 倍，才判定机器跟不上，
+     * 自动减星（老电脑 / 高分屏也顺滑）。样本不足时不动手，避免误伤。 */
+    if(drawn>=300){
+      const avgGap=gapSum/drawn;
+      if(avgGap>QCFG.starMs*2.2 && QCFG.stars>70){
+        QCFG.stars=Math.max(70,Math.round(QCFG.stars*0.6));
+        console.info('[时间罗盘] 实测帧间隔 '+avgGap.toFixed(0)+'ms 偏慢，星点自动降到 '+QCFG.stars);
+        setBG(bgIdx);
+        return;
+      }
+      drawn=0;gapSum=0;
+    }
+  }
+  frame();
+}
+function stopStars(){
+  starGen++;                       // 让在途的那一帧自行退出
+  starResize=null;
+  if(starTimer){clearTimeout(starTimer);starTimer=null}
+}
+function setBG(i){
+  bgIdx=((i%BGS.length)+BGS.length)%BGS.length;
+  document.body.classList.remove('b-nebula','b-aurora','b-grid');
+  bgCv.style.display='none';
+  stopStars();
+  const name=BGS[bgIdx];
+  if(name==='星空'){bgCv.style.display='block';startStars()}
+  else if(name==='星云')document.body.classList.add('b-nebula');
+  else if(name==='极光')document.body.classList.add('b-aurora');
+  else if(name==='网格')document.body.classList.add('b-grid');
+  document.getElementById('bBg').textContent='背景 · '+name;
+}
+document.getElementById('bBg').onclick=()=>setBG(bgIdx+1);
+document.getElementById('bCard').onclick=()=>document.getElementById('infoCard').classList.toggle('open');
+document.getElementById('infoCard').classList.add('open');   // 默认展开
+
+/* ================= 屏保模式（以 file:///...#scr 方式打开时） =================
+ * 隐藏所有控件与鼠标指针，默认切到星空流星背景 */
+if(SCR){
+  document.getElementById('btns').style.display='none';
+  document.getElementById('timePanel').style.display='none';
+  document.body.style.cursor='none';
+  setBG(1);
+  /* 子午流注卡片：紧凑+半透明，避免遮挡罗盘 */
+  const card=document.getElementById('infoCard');
+  card.classList.add('open');
+  card.style.width='260px';   /* 干支行18字需约240px，196px会折行 */
+  card.style.fontSize='10.5px';
+  card.style.padding='7px 10px';
+  card.style.opacity='0.68';
+  card.style.pointerEvents='none';
+
+  /* ================= 防烧屏引擎 v3.1（仅屏保模式） =================
+   * 移动周期一览：
+   * 1) 盘面漂移：水平 47s / 垂直 73s 一个来回（CSS 动画，见 body.scr 规则）
+   * 2) 亮度呼吸：全屏遮罩 opacity 0→0.15，96s 一个来回，用 steps(32) 离散化
+   *    （旧版连续渐变 = 每帧都要重合成整屏；现在 96 秒只变 32 次）
+   * 3) 信息卡四角轮巡：每 2 分钟淡出→顺时针换下一角→淡入（只用 inset 定位） */
+  document.body.classList.add('scr');
+  const dim=document.createElement('div');
+  dim.style.cssText='position:fixed;inset:0;background:#000;pointer-events:none;z-index:5;'
+                  + 'animation:scrDim 96s steps(32) infinite alternate';
+  document.body.appendChild(dim);
+
+  const CORNERS=[
+    {top:'16px',right:'16px',left:'auto',bottom:'auto'},
+    {bottom:'16px',right:'16px',top:'auto',left:'auto'},
+    {bottom:'16px',left:'16px',top:'auto',right:'auto'},
+    {top:'16px',left:'16px',right:'auto',bottom:'auto'}
+  ];
+  let cornerIdx=0;
+  card.style.transition='opacity 1.2s ease';
+  setInterval(()=>{
+    card.style.opacity='0';
+    setTimeout(()=>{
+      cornerIdx=(cornerIdx+1)%CORNERS.length;
+      Object.assign(card.style,CORNERS[cornerIdx]);
+      card.style.opacity='0.68';
+    },1300);
+  },120000);
+
+  /* 自动开启滴答声（Edge 需配合 --autoplay-policy=no-user-gesture-required） */
+  tickOn=true;
+  lastSec=-1;
+  try{
+    audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    if(audioCtx.resume)audioCtx.resume();
+  }catch(e){}
+}
+
+/* ================= 鼠标视差 3D 倾斜 ================= */
+let lastRx=0,lastRy=0;
+function applyTf(){
+  svg.style.transform=`scale(${zoom}) rotateX(${lastRx}deg) rotateY(${lastRy}deg)`;
+}
+/* 屏保模式没有鼠标，直接不注册 —— 省掉一个常驻合成层与每次 mousemove 的样式写入 */
+if(!SCR){
+  window.addEventListener('mousemove',e=>{
+    lastRy=(e.clientX/innerWidth*2-1)*4;
+    lastRx=-(e.clientY/innerHeight*2-1)*4;
+    applyTf();
+  });
+}
+
+/* ================= 启动主循环（最后启动，保证前面的桩都已就绪） ================= */
+update(currentDT());
+loop();
+
+/* ================= 性能监视器 =================
+ * 按 P 键（或地址栏加 #perf）呼出。看的是"实际渲染帧率"——
+ * 它直接决定 CPU/GPU 负载与风扇转速，比任何间接指标都直观。 */
+const perfEl=document.getElementById('perf');
+let perfOn=(HASH.indexOf('perf')>=0), rafTicks=0, rafT0=0, fps=0;
+function perfToggle(on){
+  perfOn=(on===undefined)?!perfOn:on;
+  perfEl.classList.toggle('open',perfOn);
+  if(perfOn){ rafTicks=0; rafT0=performance.now(); rafSample(); }
+}
+function rafSample(){
+  if(!perfOn) return;
+  rafTicks++;
+  const n=performance.now();
+  if(n-rafT0>=1000){
+    fps=rafTicks*1000/(n-rafT0); rafTicks=0; rafT0=n;
+    perfEl.textContent=
+      '实际渲染帧率  '+fps.toFixed(0)+' fps\n'+
+      '画质档位      '+QUALITY+'\n'+
+      '星点数        '+(BGS[bgIdx]==='星空'?QCFG.stars:'—')+'\n'+
+      '星空刷新      '+(BGS[bgIdx]==='星空'?QCFG.starMs+'ms':'—')+'\n'+
+      '主循环节拍    1000ms';
+  }
+  requestAnimationFrame(rafSample);
+}
+window.addEventListener('keydown',e=>{ if(e.key==='p'||e.key==='P') perfToggle(); });
+if(perfOn) perfToggle(true);
+</script>
+</body>
+</html>

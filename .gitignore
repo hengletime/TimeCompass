@@ -1,0 +1,14 @@
+# 工作区私有数据（勿上传）
+.workbuddy/
+
+# 构建中间产物
+屏保/build_auto.bat
+屏保/_embed.html
+tools/bench_result.json
+
+# 分析用中间帧（非源码，体积大）
+frames/
+
+# 系统杂物
+Thumbs.db
+Desktop.ini
