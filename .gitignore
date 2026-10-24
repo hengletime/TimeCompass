@@ -1,5 +1,6 @@
 # 工作区私有数据（勿上传）
 .workbuddy/
+deliverables/
 
 # 构建中间产物
 屏保/build_auto.bat
