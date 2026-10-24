@@ -3,7 +3,7 @@
 一款 Windows 动态屏保：以「十五层罗盘」呈现中国传统时间体系——公历、农历、干支、
 二十四节气、月相、十二时辰与子午流注，配星空流星背景与滴答声。
 
-![预览](时间罗盘.jpg)
+![预览](assets/时间罗盘.jpg)
 
 ## 特性
 
@@ -18,7 +18,8 @@
 
 ## 安装（终端用户）
 
-1. 下载 `屏保/TimeCompass.scr`（自包含，内嵌 HTML，目标机器需有 Microsoft Edge）。
+1. 到 [**Releases**](https://github.com/hengletime/TimeCompass/releases) 下载最新版的
+   `TimeCompass.scr`（自包含，内嵌 HTML，目标机器需有 Microsoft Edge）。
 2. 右键 → **安装**（会复制进 System32 并打开屏幕保护程序设置），或复制到任意目录后
    在「设置 → 个性化 → 锁屏界面 → 屏幕保护程序」中选择它。
 3. 双击 `.scr` 文件可直接全屏预览。
@@ -54,21 +55,23 @@ cd 屏保
 python _build.py      :: 构建 + 全量硬校验（资源表/标记/源码级断言/陈旧产物检测）
 ```
 
-自检工具（`tools/`）：`smoke.js`（HTML 五关自检）、`screensaver_e2e.py`（端到端）、
-`curtain_selfcheck.py`（指针幕布隔离测试）、`http_mode_test.py`（HTTP 兜底通道）等。
+自检工具（`tools/`）：`smoke.js`（HTML 五关自检，构建后必跑的 QA 门禁）。
 
 ## 目录结构
 
 ```
 时间罗盘.html        罗盘页面（屏保与浏览器共用，#scr 进入屏保模式）
+assets/             README 预览图
 屏保/
   Scr.cs             屏保壳源码（C#，Edge kiosk 宿主 + 指针幕布 + 4 策略启动链）
   构建屏保.bat        一键构建
   _build.py          构建 + 硬校验
   TC-Diag.ps1        受控电脑一键诊断
-  TimeCompass.scr    构建产物（自包含）
-tools/               自检/基准/排查工具
+tools/
+  smoke.js           HTML 自检脚本
 ```
+
+`.scr` 构建产物不入库，通过 [Releases](https://github.com/hengletime/TimeCompass/releases) 分发。
 
 ## 许可
 

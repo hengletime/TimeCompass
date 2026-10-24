@@ -10,6 +10,13 @@ tools/bench_result.json
 # 分析用中间帧（非源码，体积大）
 frames/
 
+# 构建产物（通过 GitHub Release 发布，不入库）
+屏保/*.scr
+
+# tools 只保留 QA 门禁 smoke.js，其余为一次性排查探针（本地保留，不入库）
+tools/*
+!tools/smoke.js
+
 # 系统杂物
 Thumbs.db
 Desktop.ini
